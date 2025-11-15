@@ -1,0 +1,468 @@
+﻿梁村中学生物老师梁老师制作   
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>读书声监测</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css" rel="stylesheet">
+  
+  <!-- Tailwind 配置 -->
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            primary: '#8B5CF6',
+            secondary: '#EC4899',
+            accent: '#3B82F6',
+          },
+          fontFamily: {
+            sans: ['Inter', 'system-ui', 'sans-serif'],
+          },
+        },
+      }
+    }
+  </script>
+  
+  <style type="text/tailwindcss">
+    @layer utilities {
+      .content-auto {
+        content-visibility: auto;
+      }
+      .text-shadow {
+        text-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+      }
+      .text-glow {
+        text-shadow: 0 0 10px currentColor, 0 0 20px currentColor, 0 0 30px currentColor;
+      }
+      .balloon {
+        position: absolute;
+        border-radius: 50% 50% 50% 50% / 60% 60% 40% 40%;
+        transform-origin: center bottom;
+        cursor: pointer;
+        transition: all 0.2s ease;
+      }
+      .balloon::after {
+        content: '';
+        position: absolute;
+        width: 5px;
+        height: 20px;
+        background-color: inherit;
+        bottom: -15px;
+        left: 50%;
+        transform: translateX(-50%);
+        border-radius: 0 0 3px 3px;
+      }
+      .explosion {
+        position: absolute;
+        border-radius: 50%;
+        pointer-events: none;
+        z-index: 50;
+      }
+      .flower {
+        position: absolute;
+        bottom: 0;
+        z-index: 10;
+      }
+    }
+  </style>
+</head>
+
+<body class="overflow-hidden h-screen w-screen bg-gradient-to-b from-blue-300 via-purple-200 to-pink-100">
+  <!-- 花海背景 -->
+  <div id="flower-field" class="absolute bottom-0 left-0 w-full h-1/3"></div>
+  
+  <!-- 气球容器 -->
+  <div id="balloons-container" class="absolute top-0 left-0 w-full h-full overflow-hidden"></div>
+  
+  <!-- 中央分贝显示 -->
+  <div class="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-20 text-center">
+    <div class="text-white text-[clamp(5rem,15vw,10rem)] font-bold text-shadow" id="current-decibel">0</div>
+    <div class="text-white/80 text-[clamp(1.5rem,3vw,2.5rem)] mt-2" id="average-decibel">平均: 0 dB</div>
+    <div class="mt-4 text-white/70 text-sm">
+      <span id="status-text">点击启用麦克风</span>
+      <button id="start-btn" class="ml-2 bg-primary hover:bg-primary/80 text-white px-4 py-2 rounded-full transition-all">
+        <i class="fa fa-microphone mr-1"></i> 启用
+      </button>
+    </div>
+  </div>
+  
+  <!-- 右侧分贝参考表 -->
+  <div class="absolute right-4 top-1/2 transform -translate-y-1/2 bg-white/20 backdrop-blur-md rounded-3xl p-4 shadow-3xl z-20">
+    <h3 class="text-white text-3xl font-bold mb-4 text-center">分贝参考</h3>
+    <ul class="space-y-3 text-white">
+      <li class="flex justify-between items-center">
+        <span>耳语</span>
+        <span class="font-mono">30 dB</span>
+      </li>
+      <li class="flex justify-between items-center">
+        <span>正常说话</span>
+        <span class="font-mono">60 dB</span>
+      </li>
+      <li class="flex justify-between items-center">
+        <span>大声说话</span>
+        <span class="font-mono">70-80 dB</span>
+      </li>
+      <li class="flex justify-between items-center">
+        <span>喊叫</span>
+        <span class="font-mono">90 dB</span>
+      </li>
+      <li class="flex justify-between items-center">
+        <span>汽车鸣笛</span>
+        <span class="font-mono">110 dB</span>
+      </li>
+      <li class="flex justify-between items-center">
+        <span>摇滚音乐会</span>
+        <span class="font-mono">120+ dB</span>
+      </li>
+    </ul>
+  </div>
+
+  <script>
+    // 全局变量
+    let audioContext;
+    let analyser;
+    let microphone;
+    let isListening = false;
+    let decibelHistory = [];
+    let maxHistoryLength = 30; // 30个样本计算平均值
+    let balloons = [];
+    let lastBalloonTime = 0;
+    let balloonInterval = 2000; // 气球生成间隔(ms)
+    
+    // DOM元素
+    const startBtn = document.getElementById('start-btn');
+    const currentDecibelEl = document.getElementById('current-decibel');
+    const averageDecibelEl = document.getElementById('average-decibel');
+    const statusTextEl = document.getElementById('status-text');
+    const balloonsContainer = document.getElementById('balloons-container');
+    const flowerField = document.getElementById('flower-field');
+    
+    // 初始化花海
+    function initFlowerField() {
+      const flowerCount = window.innerWidth > 768 ? 100 : 50;
+      const colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8', '#F7DC6F', '#BB8FCE', '#F1948A'];
+      
+      for (let i = 0; i < flowerCount; i++) {
+        const flower = document.createElement('div');
+        flower.classList.add('flower');
+        
+        // 随机大小和位置
+        const size = Math.random() * 40 + 20;
+        const left = Math.random() * 100;
+        const bottom = Math.random() * 30;
+        const color = colors[Math.floor(Math.random() * colors.length)];
+        
+        flower.style.width = `${size}px`;
+        flower.style.height = `${size}px`;
+        flower.style.left = `${left}%`;
+        flower.style.bottom = `${bottom}px`;
+        flower.style.backgroundColor = color;
+        flower.style.borderRadius = '50%';
+        
+        // 添加花瓣
+        for (let p = 0; p < 5; p++) {
+          const petal = document.createElement('div');
+          petal.style.position = 'absolute';
+          petal.style.width = `${size * 0.6}px`;
+          petal.style.height = `${size * 0.6}px`;
+          petal.style.backgroundColor = color;
+          petal.style.borderRadius = '50%';
+          petal.style.transform = `rotate(${p * 72}deg) translate(${size * 0.3}px, 0)`;
+          petal.style.transformOrigin = 'center';
+          flower.appendChild(petal);
+        }
+        
+        flowerField.appendChild(flower);
+      }
+    }
+    
+    // 创建气球
+    function createBalloon() {
+      const balloon = document.createElement('div');
+      balloon.classList.add('balloon');
+      
+      // 随机属性
+      const size = Math.random() * 40 + 30;
+      const left = Math.random() * 80 + 10; // 10%到90%之间
+      const startY = window.innerHeight;
+      const color = `hsl(${Math.random() * 360}, 80%, 60%)`;
+      const speed = Math.random() * 0.8 + 0.2; // 上升速度
+      
+      balloon.style.width = `${size}px`;
+      balloon.style.height = `${size * 1.2}px`;
+      balloon.style.left = `${left}%`;
+      balloon.style.bottom = `-${size * 1.2}px`;
+      balloon.style.backgroundColor = color;
+      
+      // 存储气球数据
+      const balloonData = {
+        element: balloon,
+        size,
+        left,
+        y: startY,
+        speed,
+        exploded: false,
+        color
+      };
+      
+      balloons.push(balloonData);
+      balloonsContainer.appendChild(balloon);
+      
+      // 点击气球也会使其爆炸
+      balloon.addEventListener('click', () => {
+        if (!balloonData.exploded) {
+          explodeBalloon(balloonData);
+        }
+      });
+    }
+    
+    // 更新气球位置
+    function updateBalloons() {
+      const currentTime = Date.now();
+      
+      // 定期添加新气球
+      if (currentTime - lastBalloonTime > balloonInterval && isListening) {
+        createBalloon();
+        lastBalloonTime = currentTime;
+      }
+      
+      // 更新现有气球
+      for (let i = balloons.length - 1; i >= 0; i--) {
+        const balloon = balloons[i];
+        
+        if (balloon.exploded) continue;
+        
+        // 上升
+        balloon.y -= balloon.speed;
+        balloon.element.style.bottom = `${window.innerHeight - balloon.y}px`;
+        
+        // 移除飞出屏幕的气球
+        if (balloon.y + balloon.size < 0) {
+          balloon.element.remove();
+          balloons.splice(i, 1);
+        }
+      }
+    }
+    
+    // 气球爆炸效果
+    function explodeBalloon(balloon) {
+      if (balloon.exploded) return;
+      
+      balloon.exploded = true;
+      
+      // 创建爆炸效果
+      const explosionCount = 8; // 爆炸碎片数量
+      for (let i = 0; i < explosionCount; i++) {
+        const fragment = document.createElement('div');
+        fragment.classList.add('explosion');
+        
+        // 碎片属性
+        const size = Math.random() * balloon.size * 0.5 + balloon.size * 0.2;
+        const angle = (i / explosionCount) * Math.PI * 2;
+        const distance = balloon.size * 0.8;
+        const x = Math.cos(angle) * distance;
+        const y = Math.sin(angle) * distance;
+        
+        fragment.style.width = `${size}px`;
+        fragment.style.height = `${size}px`;
+        fragment.style.backgroundColor = balloon.color;
+        fragment.style.left = `${balloon.left}%`;
+        fragment.style.bottom = `${window.innerHeight - balloon.y}px`;
+        fragment.style.transform = `translate(${x}px, ${-y}px)`;
+        fragment.style.opacity = '0.8';
+        
+        balloonsContainer.appendChild(fragment);
+        
+        // 动画效果
+        setTimeout(() => {
+          fragment.style.transition = 'all 0.6s ease-out';
+          fragment.style.transform = `translate(${x * 3}px, ${-y * 3}px) scale(0.3)`;
+          fragment.style.opacity = '0';
+          
+          // 移除碎片
+          setTimeout(() => fragment.remove(), 600);
+        }, 10);
+      }
+      
+      // 移除气球
+      balloon.element.remove();
+      const index = balloons.indexOf(balloon);
+      if (index !== -1) {
+        balloons.splice(index, 1);
+      }
+    }
+    
+    // 根据音量爆炸气球
+    function explodeBalloonsByVolume(volume) {
+      // 音量越大，爆炸越多气球
+      const threshold = 40; // 基础阈值
+      const adjustedThreshold = threshold - (volume - 40) * 0.5; // 动态调整阈值
+      
+      // 计算应该爆炸的气球数量
+      let balloonsToExplode = Math.floor((volume - adjustedThreshold) / 10);
+      balloonsToExplode = Math.max(0, Math.min(balloonsToExplode, balloons.length));
+      
+      // 随机选择气球爆炸
+      for (let i = 0; i < balloonsToExplode; i++) {
+        if (balloons.length === 0) break;
+        const randomIndex = Math.floor(Math.random() * balloons.length);
+        const balloon = balloons[randomIndex];
+        explodeBalloon(balloon);
+      }
+    }
+    
+    // 计算分贝
+    function calculateDecibels() {
+      if (!analyser) return 0;
+      
+      const bufferLength = analyser.frequencyBinCount;
+      const dataArray = new Uint8Array(bufferLength);
+      analyser.getByteFrequencyData(dataArray);
+      
+      // 计算平均振幅
+      let sum = 0;
+      for (let i = 0; i < bufferLength; i++) {
+        sum += dataArray[i];
+      }
+      const average = sum / bufferLength;
+      
+      // 转换为分贝 (大致估算)
+      // 参考: 0-255的范围映射到30-100分贝
+      const decibels = Math.round(30 + (average / 255) * 70);
+      return decibels + 10;
+    }
+    
+    // 更新分贝显示
+    function updateDecibelDisplay(decibels) {
+      // 更新当前分贝
+      currentDecibelEl.textContent = decibels;
+      
+      // 调整颜色和大小以反映音量
+      const scale = Math.min(1.5, 1 + (decibels - 50) / 100);
+      currentDecibelEl.style.transform = `scale(${scale})`;
+      
+      // 根据分贝值改变颜色
+      let color;
+      if (decibels < 40) color = '#4ECDC4';      // 低音量 - 青色
+      else if (decibels < 60) color = '#F7DC6F'; // 中等音量 - 黄色
+      else if (decibels < 80) color = '#FFA07A'; // 高音量 - 浅红
+      else color = '#FF6B6B';                    // 极高音量 - 红色
+      
+      currentDecibelEl.style.color = color;
+      
+      // 更新历史记录和平均分贝
+      decibelHistory.push(decibels);
+      if (decibelHistory.length > maxHistoryLength) {
+        decibelHistory.shift();
+      }
+      
+      const average = Math.round(decibelHistory.reduce((sum, val) => sum + val, 0) / decibelHistory.length);
+      averageDecibelEl.textContent = `平均: ${average} dB`;
+      
+      // 根据音量调整气球生成速度
+      balloonInterval = Math.max(500, 2000 - (decibels - 40) * 20);
+      
+      // 触发气球爆炸
+      explodeBalloonsByVolume(decibels);
+    }
+    
+    // 音频分析循环
+    function audioLoop() {
+      if (!isListening) return;
+      
+      requestAnimationFrame(audioLoop);
+      const decibels = calculateDecibels();
+      updateDecibelDisplay(decibels);
+      updateBalloons();
+    }
+    
+    // 启动麦克风监听
+    async function startListening() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        analyser = audioContext.createAnalyser();
+        analyser.fftSize = 256;
+        
+        microphone = audioContext.createMediaStreamSource(stream);
+        microphone.connect(analyser);
+        
+        isListening = true;
+        statusTextEl.textContent = '正在监听环境声音...';
+        startBtn.innerHTML = '<i class="fa fa-stop mr-1"></i> 停止';
+        startBtn.classList.remove('bg-primary');
+        startBtn.classList.add('bg-red-500');
+        
+        // 清空历史记录
+        decibelHistory = [];
+        
+        // 开始循环
+        audioLoop();
+      } catch (err) {
+        console.error('无法访问麦克风:', err);
+        statusTextEl.textContent = '无法访问麦克风，请检查权限';
+      }
+    }
+    
+    // 停止监听
+    function stopListening() {
+      if (microphone) {
+        microphone.disconnect();
+      }
+      if (audioContext) {
+        audioContext.close();
+      }
+      
+      isListening = false;
+      statusTextEl.textContent = '已停止监听';
+      startBtn.innerHTML = '<i class="fa fa-microphone mr-1"></i> 启用';
+      startBtn.classList.remove('bg-red-500');
+      startBtn.classList.add('bg-primary');
+    }
+    
+    // 按钮点击事件
+    startBtn.addEventListener('click', () => {
+      if (isListening) {
+        stopListening();
+      } else {
+        startListening();
+      }
+    });
+    
+    // 初始化
+    window.addEventListener('load', () => {
+      initFlowerField();
+      
+      // 预先创建几个气球
+      for (let i = 0; i < 3; i++) {
+        createBalloon();
+      }
+      
+      // 即使没有声音也让气球上升
+      function idleUpdate() {
+        if (!isListening) {
+          updateBalloons();
+        }
+        requestAnimationFrame(idleUpdate);
+      }
+      idleUpdate();
+    });
+    
+    // 响应窗口大小变化
+    window.addEventListener('resize', () => {
+      // 清除现有气球
+      balloons.forEach(balloon => balloon.element.remove());
+      balloons = [];
+      
+      // 重新创建几个气球
+      for (let i = 0; i < 3; i++) {
+        createBalloon();
+      }
+    });
+  </script>
+</body>
+</html>
