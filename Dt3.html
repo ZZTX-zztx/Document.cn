@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>3D坦克对战（优化视觉）</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #87CEEB; color: #333; font-family: Arial; }
+        #ui { position: absolute; top: 10px; width: 100%; text-align: center; z-index: 100; }
+        #score { font-size: 24px; margin-bottom: 10px; text-shadow: 0 0 5px #fff; }
+        #controls { font-size: 16px; background: rgba(255,255,255,0.8); padding: 5px 10px; border-radius: 5px; display: inline-block; }
+    </style>
+</head>
+<body>
+    <div id="ui">
+        <div id="score">得分: 0 | 生命值: 3</div>
+        <div id="controls">WASD移动 | 鼠标瞄准 | 空格开火</div>
+    </div>
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        // 1. 初始化WebGL
+        const canvas = document.getElementById('gameCanvas');
+        const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        gl.viewport(0, 0, canvas.width, canvas.height);
+        gl.clearColor(0.8, 0.9, 1.0, 1); // 浅蓝色天空背景
+        gl.enable(gl.DEPTH_TEST);
+        gl.enable(gl.BLEND); // 启用混合（发光效果）
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+        // 2. 增强版Shader（增加发光效果）
+        const vsSource = `
+            attribute vec3 aPosition;
+            attribute vec3 aColor;
+            uniform mat4 uModelViewMatrix;
+            uniform mat4 uProjectionMatrix;
+            varying vec3 vColor;
+            void main() {
+                gl_Position = uProjectionMatrix * uModelViewMatrix * vec4(aPosition, 1.0);
+                vColor = aColor;
+            }
+        `;
+        const fsSource = `
+            precision mediump float;
+            varying vec3 vColor;
+            void main() {
+                // 发光效果：边缘提亮
+                vec2 uv = gl_FragCoord.xy / vec2(800, 600);
+                float glow = smoothstep(0.8, 1.0, length(uv - 0.5));
+                gl_FragColor = vec4(vColor + glow * 0.3, 1.0);
+            }
+        `;
+
+        // 编译Shader
+        function createShader(gl, type, source) {
+            const shader = gl.createShader(type);
+            gl.shaderSource(shader, source);
+            gl.compileShader(shader);
+            return shader;
+        }
+        const vertexShader = createShader(gl, gl.VERTEX_SHADER, vsSource);
+        const fragmentShader = createShader(gl, gl.FRAGMENT_SHADER, fsSource);
+        const program = gl.createProgram();
+        gl.attachShader(program, vertexShader);
+        gl.attachShader(program, fragmentShader);
+        gl.linkProgram(program);
+        gl.useProgram(program);
+
+        // 3. 程序信息
+        const programInfo = {
+            program,
+            attribLocations: { position: gl.getAttribLocation(program, 'aPosition'), color: gl.getAttribLocation(program, 'aColor') },
+            uniformLocations: { modelViewMatrix: gl.getUniformLocation(program, 'uModelViewMatrix'), projectionMatrix: gl.getUniformLocation(program, 'uProjectionMatrix') }
+        };
+
+        // 4. 3D模型数据（高亮度配色）
+        // 玩家坦克（亮绿色）
+        const tankBodyVertices = new Float32Array([
+            // 车身主体（亮绿）
+            -1.0, 0.0, -0.8, 0.4, 1.0, 0.4,
+             1.0, 0.0, -0.8, 0.4, 1.0, 0.4,
+             1.0, 0.0,  0.8, 0.4, 1.0, 0.4,
+            -1.0, 0.0,  0.8, 0.4, 1.0, 0.4,
+            -1.0, 0.6, -0.8, 0.3, 0.9, 0.3,
+             1.0, 0.6, -0.8, 0.3, 0.9, 0.3,
+             1.0, 0.6,  0.8, 0.3, 0.9, 0.3,
+            -1.0, 0.6,  0.8, 0.3, 0.9, 0.3,
+            // 履带（浅灰色）
+            -1.2, 0.0, -1.0, 0.7, 0.7, 0.7,
+            -1.0, 0.0, -1.0, 0.7, 0.7, 0.7,
+            -1.0, 0.0,  1.0, 0.7, 0.7, 0.7,
+            -1.2, 0.0,  1.0, 0.7, 0.7, 0.7,
+             1.0, 0.0, -1.0, 0.7, 0.7, 0.7,
+             1.2, 0.0, -1.0, 0.7, 0.7, 0.7,
+             1.2, 0.0,  1.0, 0.7, 0.7, 0.7,
+             1.0, 0.0,  1.0, 0.7, 0.7, 0.7
+        ]);
+        const tankBodyIndices = new Uint16Array([0,1,5, 0,5,4, 1,2,6, 1,6,5, 2,3,7, 2,7,6, 3,0,4, 3,4,7, 8,9,10, 8,10,11, 12,13,14, 12,14,15]);
+
+        // 炮塔（深绿+亮黑炮管）
+        const turretVertices = new Float32Array([
+            0.0, 0.6, 0.0, 0.2, 0.8, 0.2,
+            0.5, 0.6, 0.0, 0.2, 0.8, 0.2,
+            0.5, 0.6, 0.5, 0.2, 0.8, 0.2,
+            0.0, 0.6, 0.5, 0.2, 0.8, 0.2,
+            0.0, 1.0, 0.0, 0.1, 0.7, 0.1,
+            0.5, 1.0, 0.0, 0.1, 0.7, 0.1,
+            0.5, 1.0, 0.5, 0.1, 0.7, 0.1,
+            0.0, 1.0, 0.5, 0.1, 0.7, 0.1,
+            // 炮管（亮黑色）
+            0.5, 0.8, 0.2, 0.2, 0.2, 0.2,
+            1.5, 0.8, 0.2, 0.2, 0.2, 0.2,
+            1.5, 0.7, 0.3, 0.2, 0.2, 0.2,
+            0.5, 0.7, 0.3, 0.2, 0.2, 0.2
+        ]);
+        const turretIndices = new Uint16Array([0,1,5, 0,5,4, 1,2,6, 1,6,5, 2,3,7, 2,7,6, 3,0,4, 3,4,7, 8,9,10, 8,10,11]);
+
+        // 炮弹（亮黄色）
+        const bulletVertices = new Float32Array([
+            -0.1, 0.75, 0.25, 1.0, 1.0, 0.0,
+             0.1, 0.75, 0.25, 1.0, 1.0, 0.0,
+             0.1, 0.75, 0.35, 1.0, 1.0, 0.0,
+            -0.1, 0.75, 0.35, 1.0, 1.0, 0.0,
+            -0.1, 0.85, 0.25, 1.0, 1.0, 0.0,
+             0.1, 0.85, 0.25, 1.0, 1.0, 0.0,
+             0.1, 0.85, 0.35, 1.0, 1.0, 0.0,
+            -0.1, 0.85, 0.35, 1.0, 1.0, 0.0
+        ]);
+        const bulletIndices = new Uint16Array([0,1,5, 0,5,4, 1,2,6, 1,6,5, 2,3,7, 2,7,6, 3,0,4, 3,4,7, 4,5,6, 4,6,7, 0,3,7, 0,7,4]);
+
+        // 地面（浅绿色网格）
+        const groundVertices = new Float32Array([
+            -50, 0, -50, 0.7, 0.9, 0.7,
+             50, 0, -50, 0.7, 0.9, 0.7,
+             50, 0,  50, 0.7, 0.9, 0.7,
+            -50, 0,  50, 0.7, 0.9, 0.7
+        ]);
+        const groundIndices = new Uint16Array([0,1,2, 0,2,3]);
+
+        // 5. 创建缓冲区
+        function createBuffer(vertices, indices) {
+            const vertexBuffer = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+            const indexBuffer = gl.createBuffer();
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
+            gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
+            return { vertexBuffer, indexBuffer, indexCount: indices.length };
+        }
+        const tankBodyBuffer = createBuffer(tankBodyVertices, tankBodyIndices);
+        const turretBuffer = createBuffer(turretVertices, turretIndices);
+        const bulletBuffer = createBuffer(bulletVertices, bulletIndices);
+        const groundBuffer = createBuffer(groundVertices, groundIndices);
+
+        // 6. 矩阵工具库
+        const mat4 = {
+            create: () => new Float32Array(16),
+            identity: (mat) => { mat[0]=1;mat[1]=0;mat[2]=0;mat[3]=0;mat[4]=0;mat[5]=1;mat[6]=0;mat[7]=0;mat[8]=0;mat[9]=0;mat[10]=1;mat[11]=0;mat[12]=0;mat[13]=0;mat[14]=0;mat[15]=1;return mat; },
+            translate: (mat, x,y,z) => { mat[12] += mat[0]*x + mat[4]*y + mat[8]*z; mat[13] += mat[1]*x + mat[5]*y + mat[9]*z; mat[14] += mat[2]*x + mat[6]*y + mat[10]*z; return mat; },
+            rotateY: (mat, rad) => { const c=Math.cos(rad);const s=Math.sin(rad);const m0=mat[0],m4=mat[4],m8=mat[8];const m1=mat[1],m5=mat[5],m9=mat[9];mat[0]=m0*c - m8*s;mat[4]=m4*c - m9*s;mat[8]=m8*c + m0*s;mat[1]=m1*c - m9*s;mat[5]=m5*c - mat[10]*s;mat[9]=m9*c + m1*s;return mat; },
+            perspective: (fov,aspect,near,far) => { const f=Math.tan(Math.PI*0.5-0.5*fov);const nf=1/(near-far);const mat=mat4.create();mat[0]=f/aspect;mat[5]=f;mat[10]=(far+near)*nf;mat[11]=-1;mat[14]=2*far*near*nf;mat[15]=0;return mat; },
+            lookAt: (eye,center,up) => { const z0=eye[0]-center[0];const z1=eye[1]-center[1];const z2=eye[2]-center[2];const zLen=Math.hypot(z0,z1,z2);const zx=z0/zLen;const zy=z1/zLen;const zz=z2/zLen;const x0=up[1]*zz - up[2]*zy;const x1=up[2]*zx - up[0]*zz;const x2=up[0]*zy - up[1]*zx;const xLen=Math.hypot(x0,x1,x2);const xx=x0/xLen;const xy=x1/xLen;const xz=x2/xLen;const y0=zy*xz - zz*xy;const y1=zz*xx - zx*xz;const y2=zx*xy - zy*xx;const mat=mat4.create();mat[0]=xx;mat[1]=y0;mat[2]=zx;mat[4]=xy;mat[5]=y1;mat[6]=zy;mat[8]=xz;mat[9]=y2;mat[10]=zz;mat[12]=-xx*eye[0]-xy*eye[1]-xz*eye[2];mat[13]=-y0*eye[0]-y1*eye[1]-y2*eye[2];mat[14]=-zx*eye[0]-zy*eye[1]-zz*eye[2];mat[15]=1;return mat; },
+            multiply: (out,a,b) => { const a00=a[0],a01=a[1],a02=a[2],a03=a[3];const a10=a[4],a11=a[5],a12=a[6],a13=a[7];const a20=a[8],a21=a[9],a22=a[10],a23=a[11];const a30=a[12],a31=a[13],a32=a[14],a33=a[15];const b00=b[0],b01=b[1],b02=b[2],b03=b[3];const b10=b[4],b11=b[5],b12=b[6],b13=b[7];const b20=b[8],b21=b[9],b22=b[10],b23=b[11];const b30=b[12],b31=b[13],b32=b[14],b33=b[15];out[0]=a00*b00+a01*b10+a02*b20+a03*b30;out[1]=a00*b01+a01*b11+a02*b21+a03*b31;out[2]=a00*b02+a01*b12+a02*b22+a03*b32;out[3]=a00*b03+a01*b13+a02*b23+a03*b33;out[4]=a10*b00+a11*b10+a12*b20+a13*b30;out[5]=a10*b01+a11*b11+a12*b21+a13*b31;out[6]=a10*b02+a11*b12+a12*b22+a13*b32;out[7]=a10*b03+a11*b13+a12*b23+a13*b33;out[8]=a20*b00+a21*b10+a22*b20+a23*b30;out[9]=a20*b01+a21*b11+a22*b21+a23*b31;out[10]=a20*b02+a21*b12+a22*b22+a23*b32;out[11]=a20*b03+a21*b13+a22*b23+a23*b33;out[12]=a30*b00+a31*b10+a32*b20+a33*b30;out[13]=a30*b01+a31*b11+a32*b21+a33*b31;out[14]=a30*b02+a31*b12+a32*b22+a33*b32;out[15]=a30*b03+a31*b13+a32*b23+a33*b33;return out; }
+        };
+
+        // 7. 游戏状态
+        let score = 0;
+        let health = 3;
+        const keys = {};
+        const player = { x: 0, y: 0, z: 0, rotation: 0, turretRotation: 0, speed: 0.05 };
+        const bullets = [];
+        const enemies = [];
+        let mouseX = canvas.width / 2;
+
+        // 8. 敌人生成（亮红色）
+        function spawnEnemy() {
+            const angle = Math.random() * Math.PI * 2;
+            const distance = Math.random() * 20 + 15;
+            enemies.push({ x: Math.cos(angle)*distance, y:0, z:Math.sin(angle)*distance, rotation: angle, speed: 0.02+Math.random()*0.01, fireRate: Math.random()*200+300, fireTimer:0 });
+        }
+
+        // 9. 发射炮弹
+        function fireBullet() {
+            const angle = player.turretRotation;
+            bullets.push({ x: player.x+Math.cos(angle)*1.5, y:0.8, z:player.z+Math.sin(angle)*1.5, angle, speed:0.3 });
+        }
+
+        // 10. 碰撞检测
+        function checkCollisions() {
+            // 子弹撞敌人
+            for (let i=bullets.length-1; i>=0; i--) {
+                for (let j=enemies.length-1; j>=0; j--) {
+                    const dx = bullets[i].x - enemies[j].x;
+                    const dz = bullets[i].z - enemies[j].z;
+                    if (Math.hypot(dx, dz) < 2.0) {
+                        bullets.splice(i,1);
+                        enemies.splice(j,1);
+                        score +=10;
+                        document.getElementById('score').textContent = `得分: ${score} | 生命值: ${health}`;
+                        if (enemies.length <3) spawnEnemy();
+                        break;
+                    }
+                }
+                if (Math.hypot(bullets[i].x-player.x, bullets[i].z-player.z) >50) bullets.splice(i,1);
+            }
+            // 敌人撞玩家
+            enemies.forEach(enemy => {
+                const dx = player.x - enemy.x;
+                const dz = player.z - enemy.z;
+                if (Math.hypot(dx, dz) <3.0) {
+                    health--;
+                    document.getElementById('score').textContent = `得分: ${score} | 生命值: ${health}`;
+                    if (health <=0) { alert(`游戏结束！最终得分: ${score}`); location.reload(); }
+                    enemy.x += Math.cos(enemy.rotation)*5;
+                    enemy.z += Math.sin(enemy.rotation)*5;
+                }
+            });
+        }
+
+        // 11. 渲染模型
+        function renderModel(buffer, modelViewMatrix) {
+            gl.bindBuffer(gl.ARRAY_BUFFER, buffer.vertexBuffer);
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, buffer.indexBuffer);
+            gl.vertexAttribPointer(programInfo.attribLocations.position, 3, gl.FLOAT, false, 24, 0);
+            gl.vertexAttribPointer(programInfo.attribLocations.color, 3, gl.FLOAT, false, 24, 12);
+            gl.enableVertexAttribArray(programInfo.attribLocations.position);
+            gl.enableVertexAttribArray(programInfo.attribLocations.color);
+            gl.uniformMatrix4fv(programInfo.uniformLocations.modelViewMatrix, false, modelViewMatrix);
+            gl.drawElements(gl.TRIANGLES, buffer.indexCount, gl.UNSIGNED_SHORT, 0);
+        }
+
+        // 12. 游戏循环
+        function gameLoop() {
+            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+            // 投影矩阵
+            const projectionMatrix = mat4.perspective(Math.PI/4, canvas.width/canvas.height, 0.1, 100);
+            gl.uniformMatrix4fv(programInfo.uniformLocations.projectionMatrix, false, projectionMatrix);
+
+            // 第三人称视角
+            const eye = [player.x, 8, player.z+10];
+            const center = [player.x, 0, player.z];
+            const viewMatrix = mat4.lookAt(eye, center, [0,1,0]);
+
+            // 绘制地面
+            const groundMat = mat4.identity(mat4.create());
+            const groundModelView = mat4.multiply(mat4.create(), viewMatrix, groundMat);
+            renderModel(groundBuffer, groundModelView);
+
+            // 绘制玩家坦克
+            const tankBodyMat = mat4.identity(mat4.create());
+            mat4.translate(tankBodyMat, player.x, player.y, player.z);
+            mat4.rotateY(tankBodyMat, player.rotation);
+            renderModel(tankBodyBuffer, mat4.multiply(mat4.create(), viewMatrix, tankBodyMat));
+            const turretMat = mat4.identity(mat4.create());
+            mat4.translate(turretMat, player.x, player.y, player.z);
+            mat4.rotateY(turretMat, player.turretRotation);
+            renderModel(turretBuffer, mat4.multiply(mat4.create(), viewMatrix, turretMat));
+
+            // 绘制炮弹
+            bullets.forEach(bullet => {
+                bullet.x += Math.cos(bullet.angle)*bullet.speed;
+                bullet.z += Math.sin(bullet.angle)*bullet.speed;
+                const bulletMat = mat4.identity(mat4.create());
+                mat4.translate(bulletMat, bullet.x, bullet.y, bullet.z);
+                renderModel(bulletBuffer, mat4.multiply(mat4.create(), viewMatrix, bulletMat));
+            });
+
+            // 绘制敌人（亮红色）
+            enemies.forEach(enemy => {
+                const angleToPlayer = Math.atan2(player.z - enemy.z, player.x - enemy.x);
+                enemy.rotation = angleToPlayer;
+                enemy.x += Math.cos(angleToPlayer)*enemy.speed;
+                enemy.z += Math.sin(angleToPlayer)*enemy.speed;
+                // 敌人开火
+                enemy.fireTimer++;
+                if (enemy.fireTimer >= enemy.fireRate) {
+                    enemy.fireTimer = 0;
+                    bullets.push({ x: enemy.x+Math.cos(angleToPlayer)*1.5, y:0.8, z:enemy.z+Math.sin(angleToPlayer)*1.5, angle:angleToPlayer, speed:0.2 });
+                }
+                // 绘制敌人车身（亮红）
+                const enemyBodyMat = mat4.identity(mat4.create());
+                mat4.translate(enemyBodyMat, enemy.x, enemy.y, enemy.z);
+                mat4.rotateY(enemyBodyMat, enemy.rotation);
+                const enemyModelView = mat4.multiply(mat4.create(), viewMatrix, enemyBodyMat);
+                const enemyColor = new Float32Array([1.0,0.3,0.3, 1.0,0.3,0.3, 1.0,0.3,0.3, 1.0,0.3,0.3, 0.9,0.2,0.2, 0.9,0.2,0.2, 0.9,0.2,0.2, 0.9,0.2,0.2, 0.7,0.7,0.7, 0.7,0.7,0.7, 0.7,0.7,0.7, 0.7,0.7,0.7, 0.7,0.7,0.7, 0.7,0.7,0.7, 0.7,0.7,0.7, 0.7,0.7,0.7]);
+                gl.bufferSubData(gl.ARRAY_BUFFER, 0, enemyColor);
+                gl.uniformMatrix4fv(programInfo.uniformLocations.modelViewMatrix, false, enemyModelView);
+                gl.drawElements(gl.TRIANGLES, tankBodyBuffer.indexCount, gl.UNSIGNED_SHORT, 0);
+                // 绘制敌人炮塔
+                const enemyTurretMat = mat4.identity(mat4.create());
+                mat4.translate(enemyTurretMat, enemy.x, enemy.y, enemy.z);
+                mat4.rotateY(enemyTurretMat, enemy.rotation);
+                gl.uniformMatrix4fv(programInfo.uniformLocations.modelViewMatrix, false, mat4.multiply(mat4.create(), viewMatrix, enemyTurretMat));
+                gl.drawElements(gl.TRIANGLES, turretBuffer.indexCount, gl.UNSIGNED_SHORT, 0);
+            });
+
+            // 游戏逻辑
+            checkCollisions();
+            // 玩家控制
+            if (keys['KeyW']) { player.x += Math.cos(player.rotation)*player.speed; player.z += Math.sin(player.rotation)*player.speed; }
+            if (keys['KeyS']) { player.x -= Math.cos(player.rotation)*player.speed; player.z -= Math.sin(player.rotation)*player.speed; }
+            if (keys['KeyA']) player.rotation -= 0.03;
+            if (keys['KeyD']) player.rotation += 0.03;
+            player.turretRotation = player.rotation + (mouseX - canvas.width/2)*0.005;
+            // 初始敌人
+            if (enemies.length ===0) for (let i=0; i<2; i++) spawnEnemy();
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        // 13. 事件监听
+        document.addEventListener('keydown', e => { keys[e.code] = true; if (e.code === 'Space') fireBullet(); });
+        document.addEventListener('keyup', e => keys[e.code] = false);
+        document.addEventListener('mousemove', e => mouseX = e.clientX);
+        window.addEventListener('resize', () => { canvas.width = window.innerWidth; canvas.height = window.innerHeight; gl.viewport(0,0,canvas.width,canvas.height); });
+
+        // 启动游戏
+        gameLoop();
+    </script>
+</body>
+</html>
