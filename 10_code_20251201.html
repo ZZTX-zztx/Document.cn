@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>手机 Edge 自适应扩音器</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: sans-serif; }
+        body { background: #f5f5f5; padding: 20px; min-height: 100vh; box-sizing: border-box; }
+        .wrap { max-width: 400px; margin: 0 auto; background: #fff; border-radius: 16px; padding: 30px 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.08); }
+        .title { font-size: 1.6rem; color: #333; text-align: center; margin-bottom: 30px; }
+        .mic { font-size: 4rem; text-align: center; color: #2196F3; margin-bottom: 30px; transition: all 0.3s; }
+        .mic.active { animation: pulse 1.5s infinite ease-in-out; }
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.1); color: #1976D2; }
+            100% { transform: scale(1); }
+        }
+        .btn { width: 100%; padding: 16px; background: #F44336; color: #fff; border: none; border-radius: 12px; font-size: 1.1rem; cursor: pointer; margin-bottom: 25px; }
+        .btn.on { background: #4CAF50; }
+        .volume { display: flex; align-items: center; gap: 15px; margin-bottom: 25px; }
+        .volume span { font-size: 1rem; color: #666; }
+        .volume input { flex: 1; height: 8px; -webkit-appearance: none; background: #eee; border-radius: 4px; }
+        .volume input::-webkit-slider-thumb { -webkit-appearance: none; width: 22px; height: 22px; border-radius: 50%; background: #2196F3; }
+        .mode-group { margin: 20px 0; text-align: center; }
+        .mode-group span { color: #666; font-size: 1rem; margin-right: 10px; }
+        .mode-group select { padding: 8px; border-radius: 6px; border: 1px solid #eee; font-size: 0.9rem; }
+        .tip { font-size: 0.9rem; color: #999; text-align: center; line-height: 1.5; }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <h2 class="title">🔊 手机实时扩音器</h2>
+        <div class="mic" id="micIcon">🎤</div>
+        <button class="btn" id="btn">开启扩音</button>
+        
+        <div class="volume">
+            <span>音量</span>
+            <input type="range" id="vol" min="0" max="200" value="100" disabled>
+            <span id="volNum">100%</span>
+        </div>
+        
+        <div class="mode-group">
+            <span>扩音模式：</span>
+            <select id="mode" disabled>
+                <option value="normal">普通模式</option>
+                <option value="loud">大声模式</option>
+                <option value="clear">清晰模式</option>
+            </select>
+        </div>
+        
+        <div class="tip" id="tip">点击按钮开启，支持自动适配权限</div>
+    </div>
+
+    <script>
+        // 极简核心变量
+        let aCtx, src, gain, stream;
+        const btn = document.getElementById('btn');
+        const vol = document.getElementById('vol');
+        const volNum = document.getElementById('volNum');
+        const tip = document.getElementById('tip');
+        const micIcon = document.getElementById('micIcon');
+        const mode = document.getElementById('mode');
+        let on = false;
+
+        // 浏览器兼容配置
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        const getUserMedia = navigator.mediaDevices.getUserMedia || 
+                            function(constraints) {
+                                return new Promise((resolve, reject) => {
+                                    const gum = navigator.getUserMedia || navigator.webkitGetUserMedia;
+                                    gum ? gum.call(navigator, constraints, resolve, reject) : reject(new Error('不支持'));
+                                });
+                            };
+
+        // 静默权限请求（能请求则请求，失败不报错）
+        const silentRequestMic = async () => {
+            try {
+                // 尝试请求麦克风，无额外提示
+                stream = await getUserMedia({ audio: true });
+                // 初始化音频链路
+                aCtx = new AudioContext();
+                src = aCtx.createMediaStreamSource(stream);
+                gain = aCtx.createGain();
+                src.connect(gain);
+                gain.connect(aCtx.destination);
+                gain.gain.value = vol.value / 100;
+                return true;
+            } catch (e) {
+                // 请求失败静默处理，不提示任何错误
+                return false;
+            }
+        };
+
+        // 核心逻辑：点击按钮触发，能授权则开启，不能则提示
+        btn.addEventListener('click', async () => {
+            if (!on) {
+                tip.textContent = '正在初始化...';
+                const isMicAvailable = await silentRequestMic();
+                if (isMicAvailable) {
+                    // 请求成功：开启扩音
+                    on = true;
+                    btn.textContent = '关闭扩音';
+                    btn.classList.add('on');
+                    micIcon.classList.add('active');
+                    vol.disabled = false;
+                    mode.disabled = false;
+                    tip.textContent = '扩音中！对着麦克风说话';
+                    tip.style.color = '#4CAF50';
+                } else {
+                    // 请求失败：静默提示，不报错
+                    tip.textContent = '无法启用扩音，请检查设备或权限';
+                    tip.style.color = '#999';
+                }
+            } else {
+                // 关闭逻辑
+                stream?.getTracks().forEach(t => t.stop());
+                aCtx?.close();
+                on = false;
+                btn.textContent = '开启扩音';
+                btn.classList.remove('on');
+                micIcon.classList.remove('active');
+                vol.disabled = true;
+                mode.disabled = true;
+                tip.textContent = '点击按钮开启，支持自动适配权限';
+                tip.style.color = '#999';
+            }
+        });
+
+        // 音量调节
+        vol.addEventListener('input', () => {
+            const value = vol.value;
+            volNum.textContent = value + '%';
+            gain && (gain.gain.value = value / 100);
+        });
+
+        // 模式切换
+        mode.addEventListener('change', () => {
+            if (!gain) return;
+            switch(mode.value) {
+                case 'loud': gain.gain.value = 2.0; vol.value = 200; volNum.textContent = '200%'; break;
+                case 'clear': gain.gain.value = 1.2; vol.value = 120; volNum.textContent = '120%'; break;
+                default: gain.gain.value = 1.0; vol.value = 100; volNum.textContent = '100%';
+            }
+        });
+    </script>
+</body>
+</html>
